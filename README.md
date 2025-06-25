@@ -42,6 +42,8 @@ It's best to whitelist only `/masters`, `/lichess`, and `/player`.
 ### Import games
 
 1. Download database dumps from https://database.lichess.org/.
+   Alternatively run `prepare_dumps.py` to download monthly dumps,
+   filter out bullet games and keep only games within an Elo range.
 
 2. Import (optionally works directly with compressed files):
 
@@ -49,6 +51,10 @@ It's best to whitelist only `/masters`, `/lichess`, and `/player`.
    cd import-pgn
    cargo run --release -- *.pgn.zst
    ```
+
+   Instead of running the above commands manually, you can use
+   `run_opening_explorer.py` which starts the server and imports the
+   sanitized PGNs in one step.
 
    The database size will be well below 3x the compressed PGN size.
 
