@@ -13,12 +13,25 @@ from datetime import datetime
 
 
 class ProgressBar:
-    """Simple progress bar with moving average ETA."""
+    """Simple progress bar with moving average ETA.
 
-    def __init__(self, total: int, width: int = 40, history: float = 5.0) -> None:
+    Parameters
+    ----------
+    total : int
+        The total number of bytes/items to process.
+    width : int, optional
+        Width of the progress bar in characters (default 40).
+    history : float, optional
+        Time window in seconds to compute the moving average speed (default 5.0).
+    interval : float, optional
+        Minimum number of seconds between screen updates (default 1.0).
+    """
+
+    def __init__(self, total: int, width: int = 40, history: float = 5.0, interval: float = 1.0) -> None:
         self.total = total
         self.width = width
         self.history = history
+        self.interval = interval
         self.start = time.time()
         self.last_print = 0.0
         self.done = 0
@@ -30,7 +43,7 @@ class ProgressBar:
         self.samples.append((now, self.done))
         while self.samples and now - self.samples[0][0] > self.history:
             self.samples.pop(0)
-        if now - self.last_print >= 0.5:
+        if now - self.last_print >= self.interval:
             self.last_print = now
             self._print()
 
@@ -91,6 +104,7 @@ def filter_pgn_zst(in_path: Path, out_path: Path, min_elo: int, max_elo: int):
     cctx = zstd.ZstdCompressor()
 
     with open(in_path, "rb") as f_in, open(out_path, "wb") as f_out:
+        reader = io.TextIOWrapper(dctx.stream_reader(f_in), encoding="utf-8")
         progress = ProgressBar(in_path.stat().st_size)
 
         class ProgressReader:
@@ -158,24 +172,3 @@ def main():
         default=r"D:\\opening-explorer",
         help="Directory where processed PGNs will be stored",
     )
-    parser.add_argument(
-        "--start-month",
-        default="2013-01",
-        help="First month of PGN dump to download (YYYY-MM)",
-    )
-    parser.add_argument(
-        "--end-month",
-        default="2025-05",
-        help="Last month of PGN dump to download (YYYY-MM)",
-    )
-    parser.add_argument("--min-elo", type=int, default=0, help="Minimum Elo rating to keep")
-    parser.add_argument("--max-elo", type=int, default=3000, help="Maximum Elo rating to keep")
-    args = parser.parse_args()
-
-    dest_dir = Path(args.dest)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    prepare_pgns(dest_dir, args.start_month, args.end_month, args.min_elo, args.max_elo)
-
-
-if __name__ == "__main__":
-    main()
