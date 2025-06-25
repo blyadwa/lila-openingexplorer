@@ -3,11 +3,61 @@
 
 import argparse
 import io
+import sys
+import time
 import requests
 import zstandard as zstd
 import chess.pgn
 from pathlib import Path
 from datetime import datetime
+
+
+class ProgressBar:
+    """Simple progress bar with moving average ETA."""
+
+    def __init__(self, total: int, width: int = 40, history: float = 5.0) -> None:
+        self.total = total
+        self.width = width
+        self.history = history
+        self.start = time.time()
+        self.last_print = 0.0
+        self.done = 0
+        self.samples = [(self.start, 0)]
+
+    def update(self, n: int) -> None:
+        self.done += n
+        now = time.time()
+        self.samples.append((now, self.done))
+        while self.samples and now - self.samples[0][0] > self.history:
+            self.samples.pop(0)
+        if now - self.last_print >= 0.5:
+            self.last_print = now
+            self._print()
+
+    def _print(self) -> None:
+        now = time.time()
+        if len(self.samples) >= 2:
+            dt = self.samples[-1][0] - self.samples[0][0]
+            dv = self.samples[-1][1] - self.samples[0][1]
+            speed = dv / dt if dt > 0 else 0.0
+        else:
+            dt = now - self.start
+            speed = self.done / dt if dt > 0 else 0.0
+        eta = (self.total - self.done) / speed if speed > 0 else float("inf")
+        progress = self.done / self.total if self.total else 0
+        filled = int(self.width * progress)
+        bar = "#" * filled + "-" * (self.width - filled)
+        if eta != float("inf"):
+            eta_str = f"ETA {eta:6.1f}s"
+        else:
+            eta_str = "ETA ?"
+        percent = progress * 100 if self.total else 0
+        print(f"\r[{bar}] {percent:5.1f}% {eta_str}", end="", file=sys.stderr)
+        sys.stderr.flush()
+
+    def finish(self) -> None:
+        self._print()
+        print(file=sys.stderr)
 
 
 def month_range(start: str, end: str):
@@ -26,9 +76,13 @@ def download_file(url: str, dest: Path):
     dest.parent.mkdir(parents=True, exist_ok=True)
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
+        total = int(r.headers.get("Content-Length", 0))
+        progress = ProgressBar(total)
         with open(dest, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
+                progress.update(len(chunk))
+        progress.finish()
 
 
 def filter_pgn_zst(in_path: Path, out_path: Path, min_elo: int, max_elo: int):
@@ -37,7 +91,24 @@ def filter_pgn_zst(in_path: Path, out_path: Path, min_elo: int, max_elo: int):
     cctx = zstd.ZstdCompressor()
 
     with open(in_path, "rb") as f_in, open(out_path, "wb") as f_out:
-        reader = io.TextIOWrapper(dctx.stream_reader(f_in), encoding="utf-8")
+        progress = ProgressBar(in_path.stat().st_size)
+
+        class ProgressReader:
+            def __init__(self, file, pb):
+                self.file = file
+                self.pb = pb
+
+            def read(self, n=-1):
+                chunk = self.file.read(n)
+                self.pb.update(len(chunk))
+                return chunk
+
+            def __getattr__(self, name):
+                return getattr(self.file, name)
+
+        reader = io.TextIOWrapper(
+            dctx.stream_reader(ProgressReader(f_in, progress)), encoding="utf-8"
+        )
         writer = io.TextIOWrapper(cctx.stream_writer(f_out), encoding="utf-8")
 
         while True:
@@ -61,6 +132,7 @@ def filter_pgn_zst(in_path: Path, out_path: Path, min_elo: int, max_elo: int):
             writer.write(f"{moves} {result}\n\n")
 
         writer.flush()
+        progress.finish()
 
 
 def prepare_pgns(dest_dir: Path, start: str, end: str, min_elo: int, max_elo: int):
