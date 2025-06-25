@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
 """Download PGN dumps and filter them by speed and Elo."""
 
-import argparse
 import io
 import sys
 import time
@@ -13,20 +11,6 @@ from datetime import datetime
 
 
 class ProgressBar:
-    """Simple progress bar with moving average ETA.
-
-    Parameters
-    ----------
-    total : int
-        The total number of bytes/items to process.
-    width : int, optional
-        Width of the progress bar in characters (default 40).
-    history : float, optional
-        Time window in seconds to compute the moving average speed (default 5.0).
-    interval : float, optional
-        Minimum number of seconds between screen updates (default 1.0).
-    """
-
     def __init__(self, total: int, width: int = 40, history: float = 5.0, interval: float = 1.0) -> None:
         self.total = total
         self.width = width
@@ -60,10 +44,7 @@ class ProgressBar:
         progress = self.done / self.total if self.total else 0
         filled = int(self.width * progress)
         bar = "#" * filled + "-" * (self.width - filled)
-        if eta != float("inf"):
-            eta_str = f"ETA {eta:6.1f}s"
-        else:
-            eta_str = "ETA ?"
+        eta_str = f"ETA {eta:6.1f}s" if eta != float("inf") else "ETA ?"
         percent = progress * 100 if self.total else 0
         print(f"\r[{bar}] {percent:5.1f}% {eta_str}", end="", file=sys.stderr)
         sys.stderr.flush()
@@ -74,7 +55,6 @@ class ProgressBar:
 
 
 def month_range(start: str, end: str):
-    """Yield YYYY-MM strings from start to end inclusive."""
     cur = datetime.strptime(start, "%Y-%m")
     last = datetime.strptime(end, "%Y-%m")
     while cur <= last:
@@ -99,13 +79,12 @@ def download_file(url: str, dest: Path):
 
 
 def filter_pgn_zst(in_path: Path, out_path: Path, min_elo: int, max_elo: int):
-    """Decompress, filter games and recompress."""
     dctx = zstd.ZstdDecompressor()
     cctx = zstd.ZstdCompressor()
 
-    with open(in_path, "rb") as f_in, open(out_path, "wb") as f_out:
-        reader = io.TextIOWrapper(dctx.stream_reader(f_in), encoding="utf-8")
-        progress = ProgressBar(in_path.stat().st_size)
+    with open(in_path, "rb") as raw_f_in:
+        file_size = in_path.stat().st_size
+        progress = ProgressBar(file_size)
 
         class ProgressReader:
             def __init__(self, file, pb):
@@ -120,37 +99,45 @@ def filter_pgn_zst(in_path: Path, out_path: Path, min_elo: int, max_elo: int):
             def __getattr__(self, name):
                 return getattr(self.file, name)
 
-        reader = io.TextIOWrapper(
-            dctx.stream_reader(ProgressReader(f_in, progress)), encoding="utf-8"
-        )
-        writer = io.TextIOWrapper(cctx.stream_writer(f_out), encoding="utf-8")
+        wrapped_in = ProgressReader(raw_f_in, progress)
+        reader = io.TextIOWrapper(dctx.stream_reader(wrapped_in), encoding="utf-8")
 
-        while True:
-            game = chess.pgn.read_game(reader)
-            if game is None:
-                break
-            event = game.headers.get("Event", "").lower()
-            if "bullet" in event:
-                continue
-            try:
-                white_elo = int(game.headers.get("WhiteElo", 0))
-                black_elo = int(game.headers.get("BlackElo", 0))
-            except ValueError:
-                continue
-            if not (min_elo <= white_elo <= max_elo and min_elo <= black_elo <= max_elo):
-                continue
-            result = game.headers.get("Result", "*")
-            moves = game.accept(
-                chess.pgn.StringExporter(columns=None, variations=False, comments=False)
-            ).strip()
-            writer.write(f"{moves} {result}\n\n")
+        with open(out_path, "wb") as f_out:
+            writer = io.TextIOWrapper(cctx.stream_writer(f_out), encoding="utf-8")
 
-        writer.flush()
+            while True:
+                game = chess.pgn.read_game(reader)
+                if game is None:
+                    break
+                event = game.headers.get("Event", "").lower()
+                if "bullet" in event:
+                    continue
+                try:
+                    white_elo = int(game.headers.get("WhiteElo", 0))
+                    black_elo = int(game.headers.get("BlackElo", 0))
+                except ValueError:
+                    continue
+                if not (min_elo <= white_elo <= max_elo and min_elo <= black_elo <= max_elo):
+                    continue
+                result = game.headers.get("Result", "*")
+                board = game.board()
+                moves = []
+                for move in game.mainline_moves():
+                    moves.append(board.san(move))
+                    board.push(move)
+                move_text = " ".join(f"{i // 2 + 1}. {moves[i]} {moves[i + 1]}" if i % 2 == 0 else "" for i in
+                                     range(0, len(moves) - 1, 2)).strip()
+                if len(moves) % 2 == 1:
+                    move_text += f" {len(moves) // 2 + 1}. {moves[-1]}"
+
+                writer.write(f"{move_text} {result}\n\n")
+
+            writer.flush()
+            writer.detach()  # Make sure all output is flushed
         progress.finish()
 
 
 def prepare_pgns(dest_dir: Path, start: str, end: str, min_elo: int, max_elo: int):
-    """Download and filter PGN dumps. Return list of processed files."""
     processed = []
     for month in month_range(start, end):
         url = f"https://database.lichess.org/standard/lichess_db_standard_rated_{month}.pgn.zst"
@@ -165,10 +152,15 @@ def prepare_pgns(dest_dir: Path, start: str, end: str, min_elo: int, max_elo: in
     return processed
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Download and sanitize PGN dumps")
-    parser.add_argument(
-        "--dest",
-        default=r"D:\\opening-explorer",
-        help="Directory where processed PGNs will be stored",
-    )
+# -----------------------------
+# Main logic with hardcoded config
+# -----------------------------
+if __name__ == "__main__":
+    # Configuration
+    destination_dir = Path("D:/opening-explorer")
+    date_start = "2013-01"
+    date_end = "2013-01"
+    min_elo = 1564
+    max_elo = 9999
+
+    prepare_pgns(destination_dir, date_start, date_end, min_elo, max_elo)

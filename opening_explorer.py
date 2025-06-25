@@ -35,13 +35,18 @@ class Stats:
         }
 
 
+import re
+
 def parse_game(line: str):
     parts = line.strip().split()
     if not parts:
         return None, None
     result = parts[-1]
     moves = parts[:-1]
+    # Remove move numbers like '1.', '2.', etc.
+    moves = [move for move in moves if not re.match(r"^\d+\.$", move)]
     return moves, result
+
 
 
 def build_index(pgns: list[Path], out_file: Path) -> None:
